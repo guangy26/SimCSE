@@ -8,6 +8,7 @@ import torch
 import collections
 import random
 
+from sentence_transformers import SentenceTransformer, util
 from datasets import load_dataset
 
 import transformers
@@ -122,6 +123,15 @@ class ModelArguments:
             "help": "Use MLP only during training"
         }
     )
+    num_sent: int = field(
+        default=2,
+        metadata={"help": "Number of sentences for each sample (2 for unsupervised SimCSE)."}
+    )
+    # Added sbert_model_path argument
+    sbert_model_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "The path to the local Sentence-BERT model used for computing similarity masks."}
+    )
 
 
 @dataclass
@@ -176,8 +186,8 @@ class DataTrainingArguments:
     )
 
     def __post_init__(self):
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
+        if self.dataset_name is None and self.train_file is None:
+            raise ValueError("Need either a dataset name or a training file.")
         else:
             if self.train_file is not None:
                 extension = self.train_file.split(".")[-1]
@@ -196,7 +206,6 @@ class OurTrainingArguments(TrainingArguments):
     )
 
     @cached_property
-    @torch_required
     def _setup_devices(self) -> "torch.device":
         logger.info("PyTorch: setting up devices")
         if self.no_cuda:
@@ -289,6 +298,9 @@ def main():
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
+
+    # Load pre-trained Sentence-BERT model for similarity computation
+    sbert_model = SentenceTransformer(model_args.sbert_model_path)  # Added code to load local Sentence-BERT model
 
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
@@ -456,6 +468,8 @@ def main():
     class OurDataCollatorWithPadding:
 
         tokenizer: PreTrainedTokenizerBase
+        sbert_model: SentenceTransformer  # Added sbert_model as a parameter
+        similarity_threshold: float = 0.7  # Added similarity_threshold as a parameter
         padding: Union[bool, str, PaddingStrategy] = True
         max_length: Optional[int] = None
         pad_to_multiple_of: Optional[int] = None
@@ -493,6 +507,29 @@ def main():
                 batch["labels"] = batch["label_ids"]
                 del batch["label_ids"]
 
+            # Begin modifications for computing similarity mask
+            # Extract anchor and negative input_ids
+            anchor_input_ids = batch['input_ids'][:, 0, :]  # Shape: [batch_size, seq_len]
+            negative_input_ids = batch['input_ids'][:, 1, :]  # Shape: [batch_size, seq_len]
+
+            # Decode input_ids back to texts
+            anchor_texts = self.tokenizer.batch_decode(anchor_input_ids, skip_special_tokens=True)
+            negative_texts = self.tokenizer.batch_decode(negative_input_ids, skip_special_tokens=True)
+
+            # Compute embeddings using sbert_model
+            with torch.no_grad():
+                anchor_embeddings = self.sbert_model.encode(anchor_texts, convert_to_tensor=True)
+                negative_embeddings = self.sbert_model.encode(negative_texts, convert_to_tensor=True)
+
+            # Compute cosine similarities
+            cosine_scores = util.cos_sim(anchor_embeddings, negative_embeddings)  # Shape: [batch_size, 1]
+
+            # Create similarity mask based on threshold
+            similarity_mask = (cosine_scores < self.similarity_threshold).float()  # Shape: [batch_size, 1]
+
+            # Add similarity_mask to batch
+            batch['similarity_mask'] = similarity_mask.squeeze()  # Shape: [batch_size]
+
             return batch
         
         def mask_tokens(
@@ -529,7 +566,12 @@ def main():
             # The rest of the time (10% of the time) we keep the masked input tokens unchanged
             return inputs, labels
 
-    data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(tokenizer)
+    data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
+        tokenizer=tokenizer,
+        sbert_model=sbert_model,  # Pass sbert_model to the data collator
+        similarity_threshold=0.9  # You can set your threshold here
+    )
+
 
     trainer = CLTrainer(
         model=model,
@@ -537,8 +579,8 @@ def main():
         train_dataset=train_dataset if training_args.do_train else None,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        model_args=model_args  # Pass model_args to the trainer
     )
-    trainer.model_args = model_args
 
     # Training
     if training_args.do_train:

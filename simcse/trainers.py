@@ -23,7 +23,6 @@ from transformers.trainer_utils import (
     PredictionOutput,
     TrainOutput,
     default_compute_objective,
-    default_hp_space,
     set_seed,
     speed_metrics,
 )
@@ -31,8 +30,7 @@ from transformers.file_utils import (
     WEIGHTS_NAME,
     is_apex_available,
     is_datasets_available,
-    is_in_notebook,
-    is_torch_tpu_available,
+    is_torch_tpu_available
 )
 from transformers.trainer_callback import (
     CallbackHandler,
@@ -72,7 +70,6 @@ if version.parse(torch.__version__) >= version.parse("1.6"):
 if is_datasets_available():
     import datasets
 
-from transformers.trainer import _model_unwrap
 from transformers.optimization import Adafactor, AdamW, get_scheduler
 import copy
 # Set path to SentEval
@@ -81,7 +78,6 @@ PATH_TO_DATA = './SentEval/data'
 
 # Import SentEval
 sys.path.insert(0, PATH_TO_SENTEVAL)
-import senteval
 import numpy as np
 from datetime import datetime
 from filelock import FileLock
@@ -89,6 +85,21 @@ from filelock import FileLock
 logger = logging.get_logger(__name__)
 
 class CLTrainer(Trainer):
+    def __init__(self, model,
+        args,
+        train_dataset,
+        tokenizer,
+        data_collator,
+        model_args):
+        super().__init__(
+            model=model,
+            args=args,
+            data_collator=data_collator,
+            train_dataset=train_dataset,
+            tokenizer=tokenizer,
+        )
+        self.model_args = model_args
+        
 
     def evaluate(
         self,
@@ -243,6 +254,43 @@ class CLTrainer(Trainer):
             if self.is_world_process_zero():
                 self._rotate_checkpoints(use_mtime=True)
     
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        #添加compute_loss方法，用于修改损失函数
+        labels = inputs.get("labels", None)
+        similarity_mask = inputs.pop("similarity_mask", None)  #获取相似度掩码
+
+        # Forward pass
+        outputs = model(**inputs, output_hidden_states=True, return_dict=True, sent_emb=True)
+
+        # Get embeddings
+        pooler_output = outputs.pooler_output  # Shape: [batch_size * num_sent, hidden_size]
+
+        # Reshape embeddings to [batch_size, num_sent, hidden_size]
+        batch_size = pooler_output.size(0) // self.model_args.num_sent
+        pooler_output = pooler_output.view(batch_size, self.model_args.num_sent, -1)
+
+        # Cosine similarity as logits
+        if self.model_args.num_sent == 3:
+            z1, z2, z3 = pooler_output[:, 0], pooler_output[:, 1], pooler_output[:, 2]
+            cos_sim = torch.matmul(z1, torch.cat([z2, z3], dim=0).T)  # [bsz, bsz*2]
+            labels = torch.arange(batch_size, device=cos_sim.device)
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(cos_sim, labels)
+        else:
+            z1, z2 = pooler_output[:, 0], pooler_output[:, 1]
+            cos_sim = torch.matmul(z1, z2.T) / self.model_args.temp  # [bsz, bsz]
+            labels = torch.arange(batch_size, device=cos_sim.device)
+            loss_fct = nn.CrossEntropyLoss(reduction='none')  #设置reduction='none'以获取每个样本的损失
+            loss = loss_fct(cos_sim, labels)
+
+            if similarity_mask is not None:
+                #应用相似度掩码，将相似度高于阈值的负样本损失置零
+                loss = loss * similarity_mask.to(loss.device)
+            loss = loss.mean()
+
+        return (loss, outputs) if return_outputs else loss
+
     def train(self, model_path: Optional[str] = None, trial: Union["optuna.Trial", Dict[str, Any]] = None):
         """
         Main training entry point.
