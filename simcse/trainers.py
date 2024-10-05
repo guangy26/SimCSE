@@ -11,6 +11,7 @@ import warnings
 from pathlib import Path
 import importlib.util
 from packaging import version
+from sentence_transformers import SentenceTransformer
 from transformers import Trainer
 from transformers.modeling_utils import PreTrainedModel
 from transformers.training_args import ParallelMode, TrainingArguments
@@ -90,7 +91,8 @@ class CLTrainer(Trainer):
         train_dataset,
         tokenizer,
         data_collator,
-        model_args):
+        model_args,
+        similarity_threshold=0.9):
         super().__init__(
             model=model,
             args=args,
@@ -99,6 +101,9 @@ class CLTrainer(Trainer):
             tokenizer=tokenizer,
         )
         self.model_args = model_args
+        self.similarity_threshold = similarity_threshold
+        # Load pre-trained Sentence-BERT model for similarity computation
+        self.sbert_model = SentenceTransformer(model_args.sbert_model_path)
         
 
     def evaluate(
@@ -256,6 +261,8 @@ class CLTrainer(Trainer):
     
 
     def compute_loss(self, model, inputs, return_outputs=False):
+        # batch_size = inputs['input_ids'].size(0)
+        # seq_len = inputs['input_ids'].size(2)
         #添加compute_loss方法，用于修改损失函数
         labels = inputs.get("labels", None)
         similarity_mask = inputs.pop("similarity_mask", None)  #获取相似度掩码

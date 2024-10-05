@@ -299,9 +299,6 @@ def main():
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    # Load pre-trained Sentence-BERT model for similarity computation
-    sbert_model = SentenceTransformer(model_args.sbert_model_path)  # Added code to load local Sentence-BERT model
-
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
     # (the dataset will be downloaded automatically from the datasets Hub
@@ -468,8 +465,6 @@ def main():
     class OurDataCollatorWithPadding:
 
         tokenizer: PreTrainedTokenizerBase
-        sbert_model: SentenceTransformer  # Added sbert_model as a parameter
-        similarity_threshold: float = 0.7  # Added similarity_threshold as a parameter
         padding: Union[bool, str, PaddingStrategy] = True
         max_length: Optional[int] = None
         pad_to_multiple_of: Optional[int] = None
@@ -506,30 +501,6 @@ def main():
             if "label_ids" in batch:
                 batch["labels"] = batch["label_ids"]
                 del batch["label_ids"]
-
-            # Begin modifications for computing similarity mask
-            # Extract anchor and negative input_ids
-            anchor_input_ids = batch['input_ids'][:, 0, :]  # Shape: [batch_size, seq_len]
-            negative_input_ids = batch['input_ids'][:, 1, :]  # Shape: [batch_size, seq_len]
-
-            # Decode input_ids back to texts
-            anchor_texts = self.tokenizer.batch_decode(anchor_input_ids, skip_special_tokens=True)
-            negative_texts = self.tokenizer.batch_decode(negative_input_ids, skip_special_tokens=True)
-
-            # Compute embeddings using sbert_model
-            with torch.no_grad():
-                anchor_embeddings = self.sbert_model.encode(anchor_texts, convert_to_tensor=True)
-                negative_embeddings = self.sbert_model.encode(negative_texts, convert_to_tensor=True)
-
-            # Compute cosine similarities
-            cosine_scores = util.cos_sim(anchor_embeddings, negative_embeddings)  # Shape: [batch_size, 1]
-
-            # Create similarity mask based on threshold
-            similarity_mask = (cosine_scores < self.similarity_threshold).float()  # Shape: [batch_size, 1]
-
-            # Add similarity_mask to batch
-            batch['similarity_mask'] = similarity_mask.squeeze()  # Shape: [batch_size]
-
             return batch
         
         def mask_tokens(
@@ -538,38 +509,10 @@ def main():
             """
             Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
             """
-            inputs = inputs.clone()
-            labels = inputs.clone()
-            # We sample a few tokens in each sequence for MLM training (with probability `self.mlm_probability`)
-            probability_matrix = torch.full(labels.shape, self.mlm_probability)
-            if special_tokens_mask is None:
-                special_tokens_mask = [
-                    self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
-                ]
-                special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
-            else:
-                special_tokens_mask = special_tokens_mask.bool()
-
-            probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
-            masked_indices = torch.bernoulli(probability_matrix).bool()
-            labels[~masked_indices] = -100  # We only compute loss on masked tokens
-
-            # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
-            indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
-            inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
-
-            # 10% of the time, we replace masked input tokens with random word
-            indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-            random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
-            inputs[indices_random] = random_words[indices_random]
-
-            # The rest of the time (10% of the time) we keep the masked input tokens unchanged
-            return inputs, labels
+            pass
 
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
         tokenizer=tokenizer,
-        sbert_model=sbert_model,  # Pass sbert_model to the data collator
-        similarity_threshold=0.9  # You can set your threshold here
     )
 
 
