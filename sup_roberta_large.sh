@@ -31,7 +31,7 @@ torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
     --do_eval \
     --fp16 \
     --seed 32 \
-    --do_mlm \
+    # --do_mlm \
     --mlm_weight 0.05 \
     --mlm_probability 0.1 \
     --sbert_model_path=/root/autodl-tmp/all-MiniLM-L12-v1
