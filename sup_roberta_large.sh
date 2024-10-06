@@ -19,7 +19,7 @@ torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
     --per_device_train_batch_size 64 \
     --gradient_accumulation_steps=2 \
     --learning_rate 5e-5 \
-    --max_seq_length 32 \
+    --max_seq_length 256 \
     --evaluation_strategy steps \
     --metric_for_best_model stsb_spearman \
     --load_best_model_at_end \
