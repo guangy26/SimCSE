@@ -13,6 +13,7 @@ PORT_ID=$(expr $RANDOM + 1000)
 # python train.py \
 torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
     --model_name_or_path /root/autodl-tmp/roberta-large \
+    --sbert_model_path /root/autodl-tmp/all-MiniLM-L12-v1/ \
     --train_file  /root/dataset/train_data_ernie_processed.csv \
     --output_dir  /root/sim-out/roberta-large-finetune\
     --num_train_epochs 5 \
@@ -31,8 +32,6 @@ torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
     --do_eval \
     --fp16 \
     --seed 32 \
-    # --do_mlm \
     --mlm_weight 0.05 \
     --mlm_probability 0.1 \
-    --sbert_model_path=/root/autodl-tmp/all-MiniLM-L12-v1
     "$@"
