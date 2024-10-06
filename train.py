@@ -433,7 +433,6 @@ def main():
                 if examples[sent2_cname][idx] is None:
                     examples[sent2_cname][idx] = " "
             sentences += examples[sent2_cname]
-
         sent_features = tokenizer(
             sentences,
             max_length=data_args.max_seq_length,
@@ -470,6 +469,10 @@ def main():
         pad_to_multiple_of: Optional[int] = None
         mlm: bool = True
         mlm_probability: float = data_args.mlm_probability
+        sbert_model: Optional[SentenceTransformer] = None
+        similarity_threshold_high: float = 0.9
+        similarity_threshold_low: float = 0.4
+        batch_size: int = 64
 
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
             special_keys = ['input_ids', 'attention_mask', 'token_type_ids', 'mlm_input_ids', 'mlm_labels']
@@ -494,6 +497,24 @@ def main():
                 batch["mlm_input_ids"], batch["mlm_labels"] = self.mask_tokens(batch["input_ids"])
 
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
+            
+            # Get raw text sentence from input_ids
+            original_sentences = self.tokenizer.batch_decode(batch["input_ids"][:, 0, :])
+            similar_sentences = self.tokenizer.batch_decode(batch["input_ids"][:, 1, :])
+
+            # Compute similarity masks
+            if self.sbert_model is None:
+                raise NotImplementedError("Sentence-BERT model is not implemented yet.")
+            else:
+                original_embeddings = self.sbert_model.encode(original_sentences, convert_to_tensor=True, batch_size=self.batch_size)
+                similar_embeddings = self.sbert_model.encode(similar_sentences, convert_to_tensor=True, batch_size=self.batch_size)
+                similarity_scores = util.pytorch_cos_sim(original_embeddings, similar_embeddings)
+                # If the similarity_scores is greater than the threshold_high, then set it to 1
+                # If the similarity_scores is less than the threshold_low, then set it to 0
+                # Otherwise, do not change the value
+                similarity_scores = torch.where(similarity_scores > self.similarity_threshold_high, torch.tensor(0.0), similarity_scores)
+                similarity_scores = torch.where(similarity_scores < self.similarity_threshold_low, torch.tensor(1.0), similarity_scores)
+                batch["similarity_masks"] = similarity_scores
 
             if "label" in batch:
                 batch["labels"] = batch["label"]
@@ -511,8 +532,12 @@ def main():
             """
             pass
 
+    sbert_model=SentenceTransformer(model_args.sbert_model_path)
+    sbert_model.tokenizer = tokenizer
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
         tokenizer=tokenizer,
+        sbert_model=sbert_model,
+        batch_size=training_args.per_device_train_batch_size
     )
 
 
