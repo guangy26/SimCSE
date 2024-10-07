@@ -15,7 +15,7 @@ torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
     --model_name_or_path /root/autodl-tmp/roberta-large \
     --sbert_model_path /root/autodl-tmp/all-MiniLM-L12-v1/ \
     --train_file  /root/dataset/train_data_ernie_processed.csv \
-    --output_dir  /root/sim-out/roberta-large-finetune\
+    --output_dir  /root/sim-out/roberta-large-finetune \
     --num_train_epochs 5 \
     --per_device_train_batch_size 64 \
     --gradient_accumulation_steps=2 \
