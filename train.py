@@ -513,7 +513,7 @@ def main():
                 # Otherwise, do not change the value
                 similarity_scores = torch.where(similarity_scores > self.similarity_threshold_high, torch.tensor(0.0), similarity_scores)
                 similarity_scores = torch.where(similarity_scores < self.similarity_threshold_low, torch.tensor(1.0), similarity_scores)
-                batch["similarity_masks"] = similarity_scores
+                batch["similarity_mask"] = similarity_scores
 
             if "label" in batch:
                 batch["labels"] = batch["label"]
