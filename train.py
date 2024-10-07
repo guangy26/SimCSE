@@ -501,7 +501,6 @@ def main():
             # Get raw text sentence from input_ids
             original_sentences = self.tokenizer.batch_decode(batch["input_ids"][:, 0, :])
             similar_sentences = self.tokenizer.batch_decode(batch["input_ids"][:, 1, :])
-
             # Compute similarity masks
             if self.sbert_model is None:
                 raise NotImplementedError("Sentence-BERT model is not implemented yet.")
@@ -509,8 +508,8 @@ def main():
                 original_embeddings = self.sbert_model.encode(original_sentences, convert_to_tensor=True, batch_size=self.batch_size)
                 similar_embeddings = self.sbert_model.encode(similar_sentences, convert_to_tensor=True, batch_size=self.batch_size)
                 similarity_scores = util.pytorch_cos_sim(original_embeddings, similar_embeddings)
-                # If the similarity_scores is greater than the threshold_high, then set it to 1
-                # If the similarity_scores is less than the threshold_low, then set it to 0
+                # If the similarity_scores is greater than the threshold_high, then set it to 0
+                # If the similarity_scores is less than the threshold_low, then set it to 1
                 # Otherwise, do not change the value
                 similarity_scores = torch.where(similarity_scores > self.similarity_threshold_high, torch.tensor(0.0), similarity_scores)
                 similarity_scores = torch.where(similarity_scores < self.similarity_threshold_low, torch.tensor(1.0), similarity_scores)
@@ -533,7 +532,6 @@ def main():
             pass
 
     sbert_model=SentenceTransformer(model_args.sbert_model_path)
-    sbert_model.tokenizer = tokenizer
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
         tokenizer=tokenizer,
         sbert_model=sbert_model,
