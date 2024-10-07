@@ -260,10 +260,10 @@ class CLTrainer(Trainer):
     #     # batch_size = inputs['input_ids'].size(0)
     #     # seq_len = inputs['input_ids'].size(2)
     #     #添加compute_loss方法，用于修改损失函数
-    #     labels = inputs.get("labels", None)
-
+    #     labels = inputs.pop("labels", None)
+    #     similarity_masks = inputs.pop("similarity_masks", None)
     #     # Forward pass
-    #     outputs = model(**inputs, output_hidden_states=True, return_dict=True, sent_emb=True)
+    #     outputs = model(**inputs)
 
     #     # Get embeddings
     #     pooler_output = outputs.pooler_output  # Shape: [batch_size * num_sent, hidden_size]
@@ -286,9 +286,9 @@ class CLTrainer(Trainer):
     #         loss_fct = nn.CrossEntropyLoss(reduction='none')  #设置reduction='none'以获取每个样本的损失
     #         loss = loss_fct(cos_sim, labels)
 
-    #         if similarity_mask is not None:
+    #         if similarity_masks is not None:
     #             #应用相似度掩码，将相似度高于阈值的负样本损失置零
-    #             loss = loss * similarity_mask.to(loss.device)
+    #             loss = loss * similarity_masks.to(loss.device)
     #         loss = loss.mean()
 
     #     return (loss, outputs) if return_outputs else loss
