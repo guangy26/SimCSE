@@ -16,6 +16,8 @@ from transformers import Trainer
 from transformers.modeling_utils import PreTrainedModel
 from transformers.training_args import ParallelMode, TrainingArguments
 from transformers.utils import logging
+from transformers.trainer import _model_unwrap
+from transformers.integrations import hp_params
 from transformers.trainer_utils import (
     PREFIX_CHECKPOINT_DIR,
     BestRun,
@@ -31,6 +33,7 @@ from transformers.file_utils import (
     WEIGHTS_NAME,
     is_apex_available,
     is_datasets_available,
+    is_in_notebook,
     is_torch_tpu_available
 )
 from transformers.trainer_callback import (
@@ -553,6 +556,8 @@ class CLTrainer(Trainer):
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
+                    self.control.should_evaluate = False
+                    self.control.should_save = False
 
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
 
@@ -560,6 +565,9 @@ class CLTrainer(Trainer):
                     break
 
             self.control = self.callback_handler.on_epoch_end(self.args, self.state, self.control)
+            self.control.should_evaluate = False
+            self.control.should_save = True
+
             self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
 
             if self.args.tpu_metrics_debug or self.args.debug:
