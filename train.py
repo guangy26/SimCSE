@@ -482,7 +482,7 @@ def main():
         mlm_probability: float = data_args.mlm_probability
         sbert_model: Optional[BertModel] = None
         similarity_threshold_high: float = 0.9
-        similarity_threshold_low: float = 0.5
+        similarity_threshold_low: float = 0.4
         batch_size: int = 64
 
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
