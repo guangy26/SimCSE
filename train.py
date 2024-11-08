@@ -35,7 +35,7 @@ from transformers.tokenization_utils_base import BatchEncoding, PaddingStrategy,
 from transformers.trainer_utils import is_main_process
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 from transformers.file_utils import cached_property, torch_required, is_torch_available, is_torch_tpu_available
-from simcse.models import RobertaForCL, BertForCL
+from simcse.models import RobertaForCL, BertForCL, Similarity
 from simcse.trainers import CLTrainer
 
 logger = logging.getLogger(__name__)
@@ -265,7 +265,7 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
+    
     if (
         os.path.exists(training_args.output_dir)
         and os.listdir(training_args.output_dir)
@@ -357,7 +357,18 @@ def main():
         )
 
     if model_args.model_name_or_path:
-        if 'roberta' in model_args.model_name_or_path:
+        # HACK: chinese-roberta-wwm-ext-xxx is based on BertModel
+        if 'chinese-roberta' in model_args.model_name_or_path:
+            model = BertForCL.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+                model_args=model_args
+            )
+        elif 'roberta' in model_args.model_name_or_path:
             model = RobertaForCL.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -469,9 +480,9 @@ def main():
         pad_to_multiple_of: Optional[int] = None
         mlm: bool = True
         mlm_probability: float = data_args.mlm_probability
-        sbert_model: Optional[SentenceTransformer] = None
+        sbert_model: Optional[BertModel] = None
         similarity_threshold_high: float = 0.9
-        similarity_threshold_low: float = 0.4
+        similarity_threshold_low: float = 0.5
         batch_size: int = 64
 
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
@@ -499,21 +510,31 @@ def main():
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
             
             # Get raw text sentence from input_ids
-            original_sentences = self.tokenizer.batch_decode(batch["input_ids"][:, 0, :])
-            similar_sentences = self.tokenizer.batch_decode(batch["input_ids"][:, 1, :])
+            original_sentences = batch["input_ids"][:, 0, :]
+            similar_sentences = batch["input_ids"][:, 1, :]
+            
             # Compute similarity masks
             if self.sbert_model is None:
                 raise NotImplementedError("Sentence-BERT model is not implemented yet.")
             else:
-                original_embeddings = self.sbert_model.encode(original_sentences, convert_to_tensor=True, batch_size=self.batch_size)
-                similar_embeddings = self.sbert_model.encode(similar_sentences, convert_to_tensor=True, batch_size=self.batch_size)
-                similarity_scores = util.pytorch_cos_sim(original_embeddings, similar_embeddings)
-                # If the similarity_scores is greater than the threshold_high, then set it to 0
+                # use BertModel to get embeddings
+                original_embeddings = self.sbert_model(original_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+                similar_embeddings = self.sbert_model(similar_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+
+                sim = Similarity(0.05)
+                # original_embeddings.unsqueeze(1) -> (bs, 1, dim)
+                # similar_embeddings.unsqueeze(0) -> (1, bs, dim)
+                similarity_scores = sim(original_embeddings.unsqueeze(1), similar_embeddings.unsqueeze(0))
+                # If the similarity_scores is greater than the threshold_high, then set it to e^-10
                 # If the similarity_scores is less than the threshold_low, then set it to 1
                 # Otherwise, do not change the value
-                similarity_scores = torch.where(similarity_scores > self.similarity_threshold_high, torch.tensor(0.0), similarity_scores)
-                similarity_scores = torch.where(similarity_scores < self.similarity_threshold_low, torch.tensor(1.0), similarity_scores)
+                mask_greater = similarity_scores > self.similarity_threshold_high
+                mask_lower = similarity_scores < self.similarity_threshold_low
+                
+                similarity_scores[mask_greater] = torch.tensor(math.exp(-10))
+                similarity_scores[mask_lower] = torch.tensor(1.0)
                 batch["similarity_mask"] = similarity_scores
+                # batch["similarity_mask"] = None
 
             if "label" in batch:
                 batch["labels"] = batch["label"]
@@ -531,7 +552,7 @@ def main():
             """
             pass
 
-    sbert_model=SentenceTransformer(model_args.sbert_model_path)
+    sbert_model=BertModel.from_pretrained(model_args.sbert_model_path)
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
         tokenizer=tokenizer,
         sbert_model=sbert_model,
@@ -570,18 +591,18 @@ def main():
             trainer.state.save_to_json(os.path.join(training_args.output_dir, "trainer_state.json"))
 
     # Evaluation
-    results = {}
-    if training_args.do_eval:
-        logger.info("*** Evaluate ***")
-        results = trainer.evaluate(eval_senteval_transfer=True)
+    # results = {}
+    # if training_args.do_eval:
+    #     logger.info("*** Evaluate ***")
+    #     results = trainer.evaluate(eval_senteval_transfer=True)
 
-        output_eval_file = os.path.join(training_args.output_dir, "eval_results.txt")
-        if trainer.is_world_process_zero():
-            with open(output_eval_file, "w") as writer:
-                logger.info("***** Eval results *****")
-                for key, value in sorted(results.items()):
-                    logger.info(f"  {key} = {value}")
-                    writer.write(f"{key} = {value}\n")
+    #     output_eval_file = os.path.join(training_args.output_dir, "eval_results.txt")
+    #     if trainer.is_world_process_zero():
+    #         with open(output_eval_file, "w") as writer:
+    #             logger.info("***** Eval results *****")
+    #             for key, value in sorted(results.items()):
+    #                 logger.info(f"  {key} = {value}")
+    #                 writer.write(f"{key} = {value}\n")
 
     return results
 

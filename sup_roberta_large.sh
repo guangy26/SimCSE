@@ -12,14 +12,13 @@ PORT_ID=$(expr $RANDOM + 1000)
 # If you only want to use one card, uncomment the following line and comment the line with "torch.distributed.launch"
 # python train.py \
 torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
-    --model_name_or_path /root/autodl-tmp/roberta-large \
-    --sbert_model_path /root/autodl-tmp/all-MiniLM-L12-v1/ \
-    --train_file  /root/dataset/train_data_ernie_processed.csv \
-    --output_dir  /root/autodl-tmp/sim-out/roberta-large-finetune \
+    --model_name_or_path /root/autodl-tmp/chinese-roberta-wwm-ext \
+    --sbert_model_path /root/autodl-tmp/chinese-roberta-wwm-ext \
+    --train_file  /root/dataset/train_data_combine.csv \
+    --output_dir  /root/autodl-tmp/sim-out/roberta-www-large-ext-with-simmask-finetune \
     --evaluation_strategy="no" \
     --num_train_epochs 5 \
     --per_device_train_batch_size 32 \
-    --gradient_accumulation_steps=2 \
     --learning_rate 5e-5 \
     --max_seq_length 128 \
     --evaluation_strategy steps \
@@ -31,7 +30,6 @@ torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
     --temp 0.05 \
     --do_train \
     --fp16 \
-    --seed 32 \
-    --mlm_weight 0.05 \
-    --mlm_probability 0.1 \
+    --seed 2 \
+    --hard_negative_weight 0.8 \
     "$@"
