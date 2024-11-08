@@ -162,11 +162,11 @@ def cl_forward(cls,
         pooler_output = cls.mlp(pooler_output)
 
     # Separate representation
-    z1, z2 = pooler_output[:,0], pooler_output[:,1]
+    z1, z2 = pooler_output[:,0], pooler_output[:,1] # (bs, hidden)
 
     # Hard negative
     if num_sent == 3:
-        z3 = pooler_output[:, 2]
+        z3 = pooler_output[:, 2] # (bs, hidden)
 
     # Gather all embeddings if using distributed training
     if dist.is_initialized() and cls.training:
@@ -192,13 +192,20 @@ def cl_forward(cls,
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
 
-    cos_sim = cls.sim(z1.unsqueeze(1), z2.unsqueeze(0))
+    # z1.unsqueeze(1) -> (bs, 1, hidden)
+    # z2.unsqueeze(0) -> (1, bs, hidden)
+    cos_sim = cls.sim(z1.unsqueeze(1), z2.unsqueeze(0)) # (bs, bs)
+
+    # Add log(similarity mask) to cos_sim
+    if similarity_mask is not None:
+        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+    
     # Hard negative
     if num_sent >= 3:
-        z1_z3_cos = cls.sim(z1.unsqueeze(1), z3.unsqueeze(0))
+        z1_z3_cos = cls.sim(z1.unsqueeze(1), z3.unsqueeze(0)) # (bs, bs)
         cos_sim = torch.cat([cos_sim, z1_z3_cos], 1)
 
-    labels = torch.arange(cos_sim.size(0)).long().to(cls.device)
+    labels = torch.arange(cos_sim.size(0)).long().to(cls.device) # (bs,)
     loss_fct = nn.CrossEntropyLoss()
 
     # Calculate loss with hard negatives
@@ -289,6 +296,7 @@ class BertForCL(BertPreTrainedModel):
     def forward(self,
         input_ids=None,
         attention_mask=None,
+        similarity_mask=None,
         token_type_ids=None,
         position_ids=None,
         head_mask=None,
@@ -318,6 +326,7 @@ class BertForCL(BertPreTrainedModel):
             return cl_forward(self, self.bert,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                similarity_mask=similarity_mask,
                 token_type_ids=token_type_ids,
                 position_ids=position_ids,
                 head_mask=head_mask,
@@ -378,7 +387,7 @@ class RobertaForCL(RobertaPreTrainedModel):
             return cl_forward(self, self.roberta,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                similarity_mask=None,
+                similarity_mask=similarity_mask,
                 token_type_ids=token_type_ids,
                 position_ids=position_ids,
                 head_mask=head_mask,
