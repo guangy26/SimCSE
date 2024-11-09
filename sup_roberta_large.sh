@@ -13,7 +13,7 @@ PORT_ID=$(expr $RANDOM + 1000)
 # python train.py \
 torchrun --nproc_per_node $NUM_GPU --master_port $PORT_ID train.py \
     --model_name_or_path /root/autodl-tmp/chinese-roberta-wwm-ext \
-    --sbert_model_path /root/autodl-tmp/chinese-roberta-wwm-ext \
+    --help_model_path /root/autodl-tmp/chinese-roberta-wwm-ext \
     --train_file  /root/dataset/train_data_combine.csv \
     --output_dir  /root/autodl-tmp/sim-out/roberta-www-large-ext-with-simmask-finetune \
     --evaluation_strategy="no" \

@@ -127,10 +127,10 @@ class ModelArguments:
         default=2,
         metadata={"help": "Number of sentences for each sample (2 for unsupervised SimCSE)."}
     )
-    # Added sbert_model_path argument
-    sbert_model_path: Optional[str] = field(
+    # Added help_model_path argument
+    help_model_path: Optional[str] = field(
         default=None,
-        metadata={"help": "The path to the local Sentence-BERT model used for computing similarity masks."}
+        metadata={"help": "The path to the local model used for computing similarity masks."}
     )
 
 
@@ -480,7 +480,7 @@ def main():
         pad_to_multiple_of: Optional[int] = None
         mlm: bool = True
         mlm_probability: float = data_args.mlm_probability
-        sbert_model: Optional[BertModel] = None
+        help_model: Optional[BertModel] = None
         similarity_threshold_high: float = 0.9
         similarity_threshold_low: float = 0.4
         batch_size: int = 64
@@ -509,17 +509,15 @@ def main():
 
             batch = {k: batch[k].view(bs, num_sent, -1) if k in special_keys else batch[k].view(bs, num_sent, -1)[:, 0] for k in batch}
             
-            # Get raw text sentence from input_ids
-            original_sentences = batch["input_ids"][:, 0, :]
-            similar_sentences = batch["input_ids"][:, 1, :]
-            
             # Compute similarity masks
-            if self.sbert_model is None:
-                raise NotImplementedError("Sentence-BERT model is not implemented yet.")
-            else:
+            if self.help_model is not None:
+                # Get raw text sentence from input_ids
+                original_sentences = batch["input_ids"][:, 0, :]
+                similar_sentences = batch["input_ids"][:, 1, :]
+                
                 # use BertModel to get embeddings
-                original_embeddings = self.sbert_model(original_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
-                similar_embeddings = self.sbert_model(similar_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+                original_embeddings = self.help_model(original_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+                similar_embeddings = self.help_model(similar_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
 
                 sim = Similarity(0.05)
                 # original_embeddings.unsqueeze(1) -> (bs, 1, dim)
@@ -551,11 +549,13 @@ def main():
             Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
             """
             pass
-
-    sbert_model=BertModel.from_pretrained(model_args.sbert_model_path)
+    if model_args.help_model_path is not None:
+        help_model = BertModel.from_pretrained(model_args.help_model_path)
+    else:
+        help_model = None
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
         tokenizer=tokenizer,
-        sbert_model=sbert_model,
+        help_model=help_model,
         batch_size=training_args.per_device_train_batch_size
     )
 
