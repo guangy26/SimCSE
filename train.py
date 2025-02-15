@@ -481,8 +481,9 @@ def main():
         mlm: bool = True
         mlm_probability: float = data_args.mlm_probability
         help_model: Optional[BertModel] = None
-        similarity_threshold_high: float = 0.9
-        similarity_threshold_low: float = 0.4
+        # TODO: 将两个阈值也作为cmdline args传入
+        similarity_threshold_high: float = 0.85
+        similarity_threshold_low: float = 0.6
         batch_size: int = 64
 
         def __call__(self, features: List[Dict[str, Union[List[int], List[List[int]], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
@@ -529,6 +530,7 @@ def main():
                 mask_greater = similarity_scores > self.similarity_threshold_high
                 mask_lower = similarity_scores < self.similarity_threshold_low
                 
+                # TODO: 添加一个flag用于表示, sim_scores是否使用动态掩码
                 similarity_scores[mask_greater] = torch.tensor(math.exp(-10))
                 similarity_scores[mask_lower] = torch.tensor(1.0)
                 batch["similarity_mask"] = similarity_scores
@@ -590,6 +592,7 @@ def main():
             # Need to save the state, since Trainer.save_model saves only the tokenizer with the model
             trainer.state.save_to_json(os.path.join(training_args.output_dir, "trainer_state.json"))
 
+    # TODO: Use our evaluation code in /root/metrics
     # Evaluation
     # results = {}
     # if training_args.do_eval:
