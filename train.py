@@ -592,9 +592,9 @@ def main():
             # Need to save the state, since Trainer.save_model saves only the tokenizer with the model
             trainer.state.save_to_json(os.path.join(training_args.output_dir, "trainer_state.json"))
 
+    results = {}
     # TODO: Use our evaluation code in /root/metrics
     # Evaluation
-    # results = {}
     # if training_args.do_eval:
     #     logger.info("*** Evaluate ***")
     #     results = trainer.evaluate(eval_senteval_transfer=True)
