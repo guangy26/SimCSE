@@ -571,6 +571,8 @@ def main():
         model_args=model_args  # Pass model_args to the trainer
     )
 
+    results = {}
+
     # Training
     if training_args.do_train:
         model_path = (
