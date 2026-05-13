@@ -94,6 +94,25 @@ def cl_init(cls, config):
     cls.sim = Similarity(temp=cls.model_args.temp)
     cls.init_weights()
 
+
+def _gather_distributed_similarity_mask(similarity_mask):
+    """
+    Expand a per-rank similarity mask to match the globally gathered logits.
+    """
+    world_size = dist.get_world_size()
+    rank = dist.get_rank()
+    mask_list = [torch.empty_like(similarity_mask) for _ in range(world_size)]
+    dist.all_gather(tensor_list=mask_list, tensor=similarity_mask.contiguous())
+    mask_list[rank] = similarity_mask
+
+    if similarity_mask.dim() == 1:
+        return torch.cat(mask_list, dim=0)
+    if similarity_mask.dim() == 2:
+        return torch.block_diag(*mask_list)
+
+    raise ValueError("similarity_mask must be a vector or matrix")
+
+
 def cl_forward(cls,
     encoder,
     input_ids=None,
@@ -191,6 +210,8 @@ def cl_forward(cls,
         # Get full batch embeddings: (bs x N, hidden)
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
+        if similarity_mask is not None:
+            similarity_mask = _gather_distributed_similarity_mask(similarity_mask)
 
     # z1.unsqueeze(1) -> (bs, 1, hidden)
     # z2.unsqueeze(0) -> (1, bs, hidden)
@@ -198,7 +219,8 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,) or (bs, bs)
     
     # Hard negative
     if num_sent >= 3:
