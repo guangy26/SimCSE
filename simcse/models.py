@@ -83,6 +83,34 @@ class Pooler(nn.Module):
             raise NotImplementedError
 
 
+def gather_distributed_similarity_mask(similarity_mask):
+    """
+    Expand a per-rank similarity mask to match gathered distributed logits.
+    """
+    if similarity_mask is None or not dist.is_initialized() or dist.get_world_size() == 1:
+        return similarity_mask
+
+    world_size = dist.get_world_size()
+    rank = dist.get_rank()
+    similarity_mask_list = [torch.empty_like(similarity_mask) for _ in range(world_size)]
+    dist.all_gather(tensor_list=similarity_mask_list, tensor=similarity_mask.contiguous())
+    similarity_mask_list[rank] = similarity_mask
+
+    total_rows = sum(mask.size(0) for mask in similarity_mask_list)
+    total_cols = sum(mask.size(1) for mask in similarity_mask_list)
+    gathered_mask = similarity_mask.new_ones((total_rows, total_cols))
+
+    row_offset = 0
+    col_offset = 0
+    for mask in similarity_mask_list:
+        rows, cols = mask.size(0), mask.size(1)
+        gathered_mask[row_offset:row_offset + rows, col_offset:col_offset + cols] = mask
+        row_offset += rows
+        col_offset += cols
+
+    return gathered_mask
+
+
 def cl_init(cls, config):
     """
     Contrastive learning class init function.
@@ -191,6 +219,7 @@ def cl_forward(cls,
         # Get full batch embeddings: (bs x N, hidden)
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
+        similarity_mask = gather_distributed_similarity_mask(similarity_mask)
 
     # z1.unsqueeze(1) -> (bs, 1, hidden)
     # z2.unsqueeze(0) -> (1, bs, hidden)
@@ -198,6 +227,11 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        if similarity_mask.shape != cos_sim.shape:
+            raise ValueError(
+                f"similarity_mask shape {tuple(similarity_mask.shape)} does not match logits shape {tuple(cos_sim.shape)}"
+            )
         cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
     
     # Hard negative
