@@ -550,7 +550,42 @@ def main():
             """
             Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
             """
-            pass
+            labels = inputs.clone()
+            inputs = inputs.clone()
+
+            probability_matrix = torch.full(labels.shape, self.mlm_probability, device=labels.device)
+            if special_tokens_mask is None:
+                special_tokens_mask = [
+                    self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True)
+                    for val in labels.tolist()
+                ]
+                special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool, device=labels.device)
+            else:
+                special_tokens_mask = special_tokens_mask.bool()
+
+            probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
+            masked_indices = torch.bernoulli(probability_matrix).bool()
+            labels[~masked_indices] = -100
+
+            # 80% of the time, replace masked input tokens with tokenizer.mask_token.
+            indices_replaced = (
+                torch.bernoulli(torch.full(labels.shape, 0.8, device=labels.device)).bool()
+                & masked_indices
+            )
+            inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+
+            # 10% of the time, replace masked input tokens with random tokens.
+            indices_random = (
+                torch.bernoulli(torch.full(labels.shape, 0.5, device=labels.device)).bool()
+                & masked_indices
+                & ~indices_replaced
+            )
+            random_words = torch.randint(
+                len(self.tokenizer), labels.shape, dtype=torch.long, device=labels.device
+            )
+            inputs[indices_random] = random_words[indices_random]
+
+            return inputs, labels
     if model_args.help_model_path is not None:
         help_model = BertModel.from_pretrained(model_args.help_model_path)
     else:
@@ -594,7 +629,7 @@ def main():
 
     # TODO: Use our evaluation code in /root/metrics
     # Evaluation
-    # results = {}
+    results = {}
     # if training_args.do_eval:
     #     logger.info("*** Evaluate ***")
     #     results = trainer.evaluate(eval_senteval_transfer=True)
