@@ -170,6 +170,25 @@ def cl_forward(cls,
 
     # Gather all embeddings if using distributed training
     if dist.is_initialized() and cls.training:
+        if similarity_mask is not None:
+            similarity_mask = similarity_mask.to(device=z1.device, dtype=z1.dtype)
+            local_mask_size = similarity_mask.size(0)
+            similarity_mask_list = [torch.ones_like(similarity_mask) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=similarity_mask_list, tensor=similarity_mask.contiguous())
+
+            global_mask_size = local_mask_size * dist.get_world_size()
+            global_similarity_mask = torch.ones(
+                global_mask_size,
+                global_mask_size,
+                device=similarity_mask.device,
+                dtype=similarity_mask.dtype,
+            )
+            for rank, rank_similarity_mask in enumerate(similarity_mask_list):
+                block_start = rank * local_mask_size
+                block_end = block_start + local_mask_size
+                global_similarity_mask[block_start:block_end, block_start:block_end] = rank_similarity_mask
+            similarity_mask = global_similarity_mask
+
         # Gather hard negative
         if num_sent >= 3:
             z3_list = [torch.zeros_like(z3) for _ in range(dist.get_world_size())]
@@ -198,7 +217,8 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs, bs)
     
     # Hard negative
     if num_sent >= 3:
