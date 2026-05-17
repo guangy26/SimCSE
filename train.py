@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional, Union, List, Dict, Tuple
 import torch
+import torch.nn.functional as F
 import collections
 import random
 
@@ -35,7 +36,7 @@ from transformers.tokenization_utils_base import BatchEncoding, PaddingStrategy,
 from transformers.trainer_utils import is_main_process
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 from transformers.file_utils import cached_property, torch_required, is_torch_available, is_torch_tpu_available
-from simcse.models import RobertaForCL, BertForCL, Similarity
+from simcse.models import RobertaForCL, BertForCL
 from simcse.trainers import CLTrainer
 
 logger = logging.getLogger(__name__)
@@ -516,24 +517,22 @@ def main():
                 original_sentences = batch["input_ids"][:, 0, :]
                 similar_sentences = batch["input_ids"][:, 1, :]
                 
-                # use BertModel to get embeddings
-                original_embeddings = self.help_model(original_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
-                similar_embeddings = self.help_model(similar_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+                with torch.no_grad():
+                    # use BertModel to get embeddings
+                    original_embeddings = self.help_model(original_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+                    similar_embeddings = self.help_model(similar_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
 
-                sim = Similarity(0.05)
-                # original_embeddings.unsqueeze(1) -> (bs, 1, dim)
-                # similar_embeddings.unsqueeze(0) -> (1, bs, dim)
-                similarity_scores = sim(original_embeddings.unsqueeze(1), similar_embeddings.unsqueeze(0))
-                # If the similarity_scores is greater than the threshold_high, then set it to e^-10
-                # If the similarity_scores is less than the threshold_low, then set it to 1
-                # Otherwise, do not change the value
-                mask_greater = similarity_scores > self.similarity_threshold_high
-                mask_lower = similarity_scores < self.similarity_threshold_low
-                
-                # TODO: 添加一个flag用于表示, sim_scores是否使用动态掩码
-                similarity_scores[mask_greater] = torch.tensor(math.exp(-10))
-                similarity_scores[mask_lower] = torch.tensor(1.0)
-                batch["similarity_mask"] = similarity_scores
+                # Use raw cosine scores for thresholding, but pass only positive
+                # multiplicative weights to cl_forward where torch.log is applied.
+                similarity_scores = F.cosine_similarity(
+                    original_embeddings.unsqueeze(1),
+                    similar_embeddings.unsqueeze(0),
+                    dim=-1,
+                )
+                similarity_mask = torch.ones_like(similarity_scores)
+                similarity_mask[similarity_scores > self.similarity_threshold_high] = math.exp(-10)
+                similarity_mask.fill_diagonal_(1.0)
+                batch["similarity_mask"] = similarity_mask
                 # batch["similarity_mask"] = None
 
             if "label" in batch:
@@ -553,6 +552,7 @@ def main():
             pass
     if model_args.help_model_path is not None:
         help_model = BertModel.from_pretrained(model_args.help_model_path)
+        help_model.eval()
     else:
         help_model = None
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
@@ -594,7 +594,7 @@ def main():
 
     # TODO: Use our evaluation code in /root/metrics
     # Evaluation
-    # results = {}
+    results = {}
     # if training_args.do_eval:
     #     logger.info("*** Evaluate ***")
     #     results = trainer.evaluate(eval_senteval_transfer=True)
