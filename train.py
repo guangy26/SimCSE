@@ -8,7 +8,6 @@ import torch
 import collections
 import random
 
-from sentence_transformers import SentenceTransformer, util
 from datasets import load_dataset
 
 import transformers
@@ -35,7 +34,7 @@ from transformers.tokenization_utils_base import BatchEncoding, PaddingStrategy,
 from transformers.trainer_utils import is_main_process
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 from transformers.file_utils import cached_property, torch_required, is_torch_available, is_torch_tpu_available
-from simcse.models import RobertaForCL, BertForCL, Similarity
+from simcse.models import RobertaForCL, BertForCL
 from simcse.trainers import CLTrainer
 
 logger = logging.getLogger(__name__)
@@ -512,28 +511,48 @@ def main():
             
             # Compute similarity masks
             if self.help_model is not None:
-                # Get raw text sentence from input_ids
                 original_sentences = batch["input_ids"][:, 0, :]
                 similar_sentences = batch["input_ids"][:, 1, :]
-                
-                # use BertModel to get embeddings
-                original_embeddings = self.help_model(original_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
-                similar_embeddings = self.help_model(similar_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+                original_attention_mask = batch["attention_mask"][:, 0, :]
+                similar_attention_mask = batch["attention_mask"][:, 1, :]
 
-                sim = Similarity(0.05)
-                # original_embeddings.unsqueeze(1) -> (bs, 1, dim)
-                # similar_embeddings.unsqueeze(0) -> (1, bs, dim)
-                similarity_scores = sim(original_embeddings.unsqueeze(1), similar_embeddings.unsqueeze(0))
-                # If the similarity_scores is greater than the threshold_high, then set it to e^-10
-                # If the similarity_scores is less than the threshold_low, then set it to 1
-                # Otherwise, do not change the value
-                mask_greater = similarity_scores > self.similarity_threshold_high
-                mask_lower = similarity_scores < self.similarity_threshold_low
-                
-                # TODO: 添加一个flag用于表示, sim_scores是否使用动态掩码
-                similarity_scores[mask_greater] = torch.tensor(math.exp(-10))
-                similarity_scores[mask_lower] = torch.tensor(1.0)
-                batch["similarity_mask"] = similarity_scores
+                help_device = next(self.help_model.parameters()).device
+                original_sentences = original_sentences.to(help_device)
+                similar_sentences = similar_sentences.to(help_device)
+                original_attention_mask = original_attention_mask.to(help_device)
+                similar_attention_mask = similar_attention_mask.to(help_device)
+
+                with torch.no_grad():
+                    original_outputs = self.help_model(
+                        input_ids=original_sentences,
+                        attention_mask=original_attention_mask,
+                    )
+                    similar_outputs = self.help_model(
+                        input_ids=similar_sentences,
+                        attention_mask=similar_attention_mask,
+                    )
+
+                original_mask = original_attention_mask.unsqueeze(-1)
+                similar_mask = similar_attention_mask.unsqueeze(-1)
+                original_embeddings = (
+                    original_outputs.last_hidden_state * original_mask
+                ).sum(dim=1) / original_mask.sum(dim=1).clamp(min=1)
+                similar_embeddings = (
+                    similar_outputs.last_hidden_state * similar_mask
+                ).sum(dim=1) / similar_mask.sum(dim=1).clamp(min=1)
+
+                similarity_scores = torch.cosine_similarity(
+                    original_embeddings.unsqueeze(1),
+                    similar_embeddings.unsqueeze(0),
+                    dim=-1,
+                )
+                similarity_mask = torch.ones_like(similarity_scores)
+                similarity_mask = similarity_mask.masked_fill(
+                    similarity_scores > self.similarity_threshold_high,
+                    math.exp(-10),
+                )
+                similarity_mask.fill_diagonal_(1.0)
+                batch["similarity_mask"] = similarity_mask.to(batch["input_ids"].device)
                 # batch["similarity_mask"] = None
 
             if "label" in batch:
@@ -550,9 +569,43 @@ def main():
             """
             Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
             """
-            pass
+            inputs = inputs.clone()
+            labels = inputs.clone()
+            probability_matrix = torch.full(labels.shape, self.mlm_probability, device=labels.device)
+            if special_tokens_mask is None:
+                special_tokens_mask = [
+                    self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True)
+                    for val in labels.tolist()
+                ]
+                special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool, device=labels.device)
+            else:
+                special_tokens_mask = special_tokens_mask.bool()
+
+            probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
+            if self.tokenizer._pad_token is not None:
+                padding_mask = labels.eq(self.tokenizer.pad_token_id)
+                probability_matrix.masked_fill_(padding_mask, value=0.0)
+
+            masked_indices = torch.bernoulli(probability_matrix).bool()
+            labels[~masked_indices] = -100
+
+            indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8, device=labels.device)).bool() & masked_indices
+            inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+
+            indices_random = (
+                torch.bernoulli(torch.full(labels.shape, 0.5, device=labels.device)).bool()
+                & masked_indices
+                & ~indices_replaced
+            )
+            random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long, device=labels.device)
+            inputs[indices_random] = random_words[indices_random]
+
+            return inputs, labels
     if model_args.help_model_path is not None:
         help_model = BertModel.from_pretrained(model_args.help_model_path)
+        help_model.eval()
+        for param in help_model.parameters():
+            param.requires_grad = False
     else:
         help_model = None
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
@@ -592,20 +645,19 @@ def main():
             # Need to save the state, since Trainer.save_model saves only the tokenizer with the model
             trainer.state.save_to_json(os.path.join(training_args.output_dir, "trainer_state.json"))
 
-    # TODO: Use our evaluation code in /root/metrics
     # Evaluation
-    # results = {}
-    # if training_args.do_eval:
-    #     logger.info("*** Evaluate ***")
-    #     results = trainer.evaluate(eval_senteval_transfer=True)
+    results = {}
+    if training_args.do_eval:
+        logger.info("*** Evaluate ***")
+        results = trainer.evaluate(eval_senteval_transfer=True)
 
-    #     output_eval_file = os.path.join(training_args.output_dir, "eval_results.txt")
-    #     if trainer.is_world_process_zero():
-    #         with open(output_eval_file, "w") as writer:
-    #             logger.info("***** Eval results *****")
-    #             for key, value in sorted(results.items()):
-    #                 logger.info(f"  {key} = {value}")
-    #                 writer.write(f"{key} = {value}\n")
+        output_eval_file = os.path.join(training_args.output_dir, "eval_results.txt")
+        if trainer.is_world_process_zero():
+            with open(output_eval_file, "w") as writer:
+                logger.info("***** Eval results *****")
+                for key, value in sorted(results.items()):
+                    logger.info(f"  {key} = {value}")
+                    writer.write(f"{key} = {value}\n")
 
     return results
 
