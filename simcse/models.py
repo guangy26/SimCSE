@@ -192,13 +192,31 @@ def cl_forward(cls,
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
 
+        if similarity_mask is not None:
+            similarity_mask = similarity_mask.to(z1.device)
+            similarity_mask_list = [torch.ones_like(similarity_mask) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=similarity_mask_list, tensor=similarity_mask.contiguous())
+            similarity_mask_list[dist.get_rank()] = similarity_mask
+
+            global_similarity_mask = similarity_mask.new_ones(z1.size(0), z2.size(0))
+            row_offset = 0
+            col_offset = 0
+            for rank_similarity_mask in similarity_mask_list:
+                row_end = row_offset + rank_similarity_mask.size(0)
+                col_end = col_offset + rank_similarity_mask.size(1)
+                global_similarity_mask[row_offset:row_end, col_offset:col_end] = rank_similarity_mask
+                row_offset = row_end
+                col_offset = col_end
+            similarity_mask = global_similarity_mask
+
     # z1.unsqueeze(1) -> (bs, 1, hidden)
     # z2.unsqueeze(0) -> (1, bs, hidden)
     cos_sim = cls.sim(z1.unsqueeze(1), z2.unsqueeze(0)) # (bs, bs)
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        cos_sim = cos_sim + torch.log(similarity_mask)
     
     # Hard negative
     if num_sent >= 3:
