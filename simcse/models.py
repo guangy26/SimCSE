@@ -46,6 +46,28 @@ class Similarity(nn.Module):
         return self.cos(x, y) / self.temp
 
 
+def gather_distributed_similarity_mask(similarity_mask):
+    if similarity_mask is None or not dist.is_initialized():
+        return similarity_mask
+
+    world_size = dist.get_world_size()
+    if world_size == 1:
+        return similarity_mask
+
+    mask_list = [torch.ones_like(similarity_mask) for _ in range(world_size)]
+    dist.all_gather(tensor_list=mask_list, tensor=similarity_mask.contiguous())
+    mask_list[dist.get_rank()] = similarity_mask
+
+    local_rows, local_cols = similarity_mask.shape
+    global_mask = similarity_mask.new_ones((local_rows * world_size, local_cols * world_size))
+    for rank, rank_mask in enumerate(mask_list):
+        row_start = rank * local_rows
+        col_start = rank * local_cols
+        global_mask[row_start:row_start + local_rows, col_start:col_start + local_cols] = rank_mask
+
+    return global_mask
+
+
 class Pooler(nn.Module):
     """
     Parameter-free poolers to get the sentence embedding
@@ -191,6 +213,7 @@ def cl_forward(cls,
         # Get full batch embeddings: (bs x N, hidden)
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
+        similarity_mask = gather_distributed_similarity_mask(similarity_mask)
 
     # z1.unsqueeze(1) -> (bs, 1, hidden)
     # z2.unsqueeze(0) -> (1, bs, hidden)
@@ -198,7 +221,9 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        similarity_mask = similarity_mask.clamp_min(torch.finfo(similarity_mask.dtype).tiny)
+        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs, bs)
     
     # Hard negative
     if num_sent >= 3:
