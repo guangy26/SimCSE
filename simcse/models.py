@@ -198,7 +198,24 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        if dist.is_initialized() and cls.training:
+            # Embeddings are gathered globally above; expand local masks into
+            # matching diagonal blocks and leave cross-rank pairs neutral.
+            mask_list = [torch.ones_like(similarity_mask) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=mask_list, tensor=similarity_mask.contiguous())
+            mask_list[dist.get_rank()] = similarity_mask
+            expanded_mask = torch.ones_like(cos_sim)
+            row_offset = 0
+            col_offset = 0
+            for rank_mask in mask_list:
+                row_end = row_offset + rank_mask.size(0)
+                col_end = col_offset + rank_mask.size(1)
+                expanded_mask[row_offset:row_end, col_offset:col_end] = rank_mask
+                row_offset = row_end
+                col_offset = col_end
+            similarity_mask = expanded_mask
+        cos_sim = cos_sim + torch.log(similarity_mask.clamp_min(torch.finfo(cos_sim.dtype).tiny))
     
     # Hard negative
     if num_sent >= 3:
