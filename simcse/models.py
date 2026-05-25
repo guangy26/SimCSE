@@ -169,7 +169,8 @@ def cl_forward(cls,
         z3 = pooler_output[:, 2] # (bs, hidden)
 
     # Gather all embeddings if using distributed training
-    if dist.is_initialized() and cls.training:
+    distributed = dist.is_initialized() and cls.training
+    if distributed:
         # Gather hard negative
         if num_sent >= 3:
             z3_list = [torch.zeros_like(z3) for _ in range(dist.get_world_size())]
@@ -198,7 +199,25 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        if distributed:
+            similarity_mask_list = [torch.ones_like(similarity_mask) for _ in range(dist.get_world_size())]
+            dist.all_gather(tensor_list=similarity_mask_list, tensor=similarity_mask.contiguous())
+            similarity_mask_list[dist.get_rank()] = similarity_mask
+
+            global_similarity_mask = torch.ones_like(cos_sim)
+            row_offset = 0
+            for gathered_mask in similarity_mask_list:
+                rows, cols = gathered_mask.shape
+                global_similarity_mask[row_offset:row_offset + rows, row_offset:row_offset + cols] = gathered_mask
+                row_offset += rows
+            similarity_mask = global_similarity_mask
+
+        if similarity_mask.shape != cos_sim.shape:
+            raise ValueError(
+                f"similarity_mask shape {similarity_mask.shape} does not match cosine similarity shape {cos_sim.shape}"
+            )
+        cos_sim = cos_sim + torch.log(similarity_mask.clamp_min(torch.finfo(cos_sim.dtype).tiny))
     
     # Hard negative
     if num_sent >= 3:
