@@ -170,24 +170,40 @@ def cl_forward(cls,
 
     # Gather all embeddings if using distributed training
     if dist.is_initialized() and cls.training:
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
         # Gather hard negative
         if num_sent >= 3:
-            z3_list = [torch.zeros_like(z3) for _ in range(dist.get_world_size())]
+            z3_list = [torch.zeros_like(z3) for _ in range(world_size)]
             dist.all_gather(tensor_list=z3_list, tensor=z3.contiguous())
-            z3_list[dist.get_rank()] = z3
+            z3_list[rank] = z3
             z3 = torch.cat(z3_list, 0)
 
         # Dummy vectors for allgather
-        z1_list = [torch.zeros_like(z1) for _ in range(dist.get_world_size())]
-        z2_list = [torch.zeros_like(z2) for _ in range(dist.get_world_size())]
+        z1_list = [torch.zeros_like(z1) for _ in range(world_size)]
+        z2_list = [torch.zeros_like(z2) for _ in range(world_size)]
         # Allgather
         dist.all_gather(tensor_list=z1_list, tensor=z1.contiguous())
         dist.all_gather(tensor_list=z2_list, tensor=z2.contiguous())
 
         # Since allgather results do not have gradients, we replace the
         # current process's corresponding embeddings with original tensors
-        z1_list[dist.get_rank()] = z1
-        z2_list[dist.get_rank()] = z2
+        z1_list[rank] = z1
+        z2_list[rank] = z2
+
+        if similarity_mask is not None:
+            mask_list = [torch.ones_like(similarity_mask) for _ in range(world_size)]
+            dist.all_gather(tensor_list=mask_list, tensor=similarity_mask.contiguous())
+            mask_list[rank] = similarity_mask
+            local_rows, local_cols = similarity_mask.shape
+            global_mask = similarity_mask.new_ones(local_rows * world_size, local_cols * world_size)
+            for mask_rank, mask in enumerate(mask_list):
+                row_start = mask_rank * local_rows
+                col_start = mask_rank * local_cols
+                global_mask[row_start:row_start + local_rows, col_start:col_start + local_cols] = mask
+            similarity_mask = global_mask
+
         # Get full batch embeddings: (bs x N, hidden)
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
