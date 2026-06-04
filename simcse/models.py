@@ -198,7 +198,32 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        if dist.is_initialized() and cls.training:
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            if similarity_mask.shape != (batch_size, batch_size):
+                raise ValueError(
+                    "similarity_mask must have shape "
+                    f"({batch_size}, {batch_size}) before distributed gathering, got {tuple(similarity_mask.shape)}"
+                )
+            mask_list = [torch.ones_like(similarity_mask) for _ in range(world_size)]
+            dist.all_gather(tensor_list=mask_list, tensor=similarity_mask.contiguous())
+            mask_list[rank] = similarity_mask
+
+            global_similarity_mask = torch.ones_like(cos_sim)
+            for mask_rank, gathered_mask in enumerate(mask_list):
+                start = mask_rank * batch_size
+                end = start + batch_size
+                global_similarity_mask[start:end, start:end] = gathered_mask
+            similarity_mask = global_similarity_mask
+
+        if similarity_mask.shape != cos_sim.shape:
+            raise ValueError(
+                f"similarity_mask shape {tuple(similarity_mask.shape)} does not match logits shape {tuple(cos_sim.shape)}"
+            )
+        similarity_mask = similarity_mask.clamp_min(torch.finfo(cos_sim.dtype).tiny)
+        cos_sim = cos_sim + torch.log(similarity_mask)
     
     # Hard negative
     if num_sent >= 3:
