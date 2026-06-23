@@ -170,24 +170,39 @@ def cl_forward(cls,
 
     # Gather all embeddings if using distributed training
     if dist.is_initialized() and cls.training:
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        if similarity_mask is not None:
+            similarity_mask = similarity_mask.to(z1.device)
+            similarity_mask_list = [torch.ones_like(similarity_mask) for _ in range(world_size)]
+            dist.all_gather(tensor_list=similarity_mask_list, tensor=similarity_mask.contiguous())
+            similarity_mask_list[rank] = similarity_mask
+            global_similarity_mask = similarity_mask.new_ones(batch_size * world_size, batch_size * world_size)
+            for rank_idx, rank_similarity_mask in enumerate(similarity_mask_list):
+                rank_start = rank_idx * batch_size
+                rank_end = rank_start + batch_size
+                global_similarity_mask[rank_start:rank_end, rank_start:rank_end] = rank_similarity_mask
+            similarity_mask = global_similarity_mask
+
         # Gather hard negative
         if num_sent >= 3:
-            z3_list = [torch.zeros_like(z3) for _ in range(dist.get_world_size())]
+            z3_list = [torch.zeros_like(z3) for _ in range(world_size)]
             dist.all_gather(tensor_list=z3_list, tensor=z3.contiguous())
-            z3_list[dist.get_rank()] = z3
+            z3_list[rank] = z3
             z3 = torch.cat(z3_list, 0)
 
         # Dummy vectors for allgather
-        z1_list = [torch.zeros_like(z1) for _ in range(dist.get_world_size())]
-        z2_list = [torch.zeros_like(z2) for _ in range(dist.get_world_size())]
+        z1_list = [torch.zeros_like(z1) for _ in range(world_size)]
+        z2_list = [torch.zeros_like(z2) for _ in range(world_size)]
         # Allgather
         dist.all_gather(tensor_list=z1_list, tensor=z1.contiguous())
         dist.all_gather(tensor_list=z2_list, tensor=z2.contiguous())
 
         # Since allgather results do not have gradients, we replace the
         # current process's corresponding embeddings with original tensors
-        z1_list[dist.get_rank()] = z1
-        z2_list[dist.get_rank()] = z2
+        z1_list[rank] = z1
+        z2_list[rank] = z2
         # Get full batch embeddings: (bs x N, hidden)
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
@@ -198,7 +213,7 @@ def cl_forward(cls,
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        cos_sim = cos_sim + torch.log(similarity_mask.to(cos_sim.device)) # similarity_mask: (bs, bs)
     
     # Hard negative
     if num_sent >= 3:
