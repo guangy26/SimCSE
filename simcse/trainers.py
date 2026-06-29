@@ -11,7 +11,6 @@ import warnings
 from pathlib import Path
 import importlib.util
 from packaging import version
-from sentence_transformers import SentenceTransformer
 from transformers import Trainer
 from transformers.modeling_utils import PreTrainedModel
 from transformers.training_args import ParallelMode, TrainingArguments
@@ -82,6 +81,7 @@ PATH_TO_DATA = './SentEval/data'
 
 # Import SentEval
 sys.path.insert(0, PATH_TO_SENTEVAL)
+import senteval
 import numpy as np
 from datetime import datetime
 from filelock import FileLock
