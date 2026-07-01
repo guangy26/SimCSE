@@ -72,6 +72,12 @@ class RecentTrainingCorrectnessStaticTests(unittest.TestCase):
         self.assertIn("similarity_mask.shape != cos_sim.shape", models_source)
         self.assertIn("clamp_min(torch.finfo(cos_sim.dtype).tiny)", models_source)
 
+    def test_trainer_respects_callback_evaluation_and_save_decisions(self):
+        trainers_source = read_source("simcse/trainers.py")
+        self.assertNotIn("self.control.should_evaluate = False", trainers_source)
+        self.assertNotIn("self.control.should_save = False", trainers_source)
+        self.assertNotIn("self.control.should_save = True", trainers_source)
+
 
 if __name__ == "__main__":
     unittest.main()
