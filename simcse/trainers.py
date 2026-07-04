@@ -11,7 +11,6 @@ import warnings
 from pathlib import Path
 import importlib.util
 from packaging import version
-from sentence_transformers import SentenceTransformer
 from transformers import Trainer
 from transformers.modeling_utils import PreTrainedModel
 from transformers.training_args import ParallelMode, TrainingArguments
@@ -82,6 +81,7 @@ PATH_TO_DATA = './SentEval/data'
 
 # Import SentEval
 sys.path.insert(0, PATH_TO_SENTEVAL)
+import senteval
 import numpy as np
 from datetime import datetime
 from filelock import FileLock
@@ -556,8 +556,6 @@ class CLTrainer(Trainer):
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
-                    self.control.should_evaluate = False
-                    self.control.should_save = False
 
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
 
@@ -565,7 +563,6 @@ class CLTrainer(Trainer):
                     break
 
             self.control = self.callback_handler.on_epoch_end(self.args, self.state, self.control)
-            self.control.should_evaluate = False
             self.control.should_save = True
 
             self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
