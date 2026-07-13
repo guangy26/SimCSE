@@ -5,10 +5,10 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional, Union, List, Dict, Tuple
 import torch
+import torch.nn.functional as F
 import collections
 import random
 
-from sentence_transformers import SentenceTransformer, util
 from datasets import load_dataset
 
 import transformers
@@ -16,6 +16,7 @@ from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
     AutoConfig,
+    AutoModel,
     AutoModelForMaskedLM,
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -27,15 +28,12 @@ from transformers import (
     default_data_collator,
     set_seed,
     EvalPrediction,
-    BertModel,
-    BertForPreTraining,
-    RobertaModel
 )
 from transformers.tokenization_utils_base import BatchEncoding, PaddingStrategy, PreTrainedTokenizerBase
 from transformers.trainer_utils import is_main_process
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 from transformers.file_utils import cached_property, torch_required, is_torch_available, is_torch_tpu_available
-from simcse.models import RobertaForCL, BertForCL, Similarity
+from simcse.models import RobertaForCL, BertForCL
 from simcse.trainers import CLTrainer
 
 logger = logging.getLogger(__name__)
@@ -388,11 +386,23 @@ def main():
                 use_auth_token=True if model_args.use_auth_token else None,
                 model_args=model_args
             )
-            if model_args.do_mlm:
-                pretrained_model = BertForPreTraining.from_pretrained(model_args.model_name_or_path)
-                model.lm_head.load_state_dict(pretrained_model.cls.predictions.state_dict())
         else:
             raise NotImplementedError
+        if model_args.do_mlm:
+            pretrained_mlm_model = AutoModelForMaskedLM.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+            )
+            if isinstance(model, BertForCL):
+                model.lm_head.load_state_dict(pretrained_mlm_model.cls.predictions.state_dict())
+            elif isinstance(model, RobertaForCL):
+                model.lm_head.load_state_dict(pretrained_mlm_model.lm_head.state_dict())
+            else:
+                raise NotImplementedError("Unsupported model type for MLM head initialization")
     else:
         raise NotImplementedError
         logger.info("Training new model from scratch")
@@ -461,6 +471,7 @@ def main():
             
         return features
 
+    train_dataset = None
     if training_args.do_train:
         train_dataset = datasets["train"].map(
             prepare_features,
@@ -480,7 +491,7 @@ def main():
         pad_to_multiple_of: Optional[int] = None
         mlm: bool = True
         mlm_probability: float = data_args.mlm_probability
-        help_model: Optional[BertModel] = None
+        help_model: Optional[torch.nn.Module] = None
         # TODO: 将两个阈值也作为cmdline args传入
         similarity_threshold_high: float = 0.85
         similarity_threshold_low: float = 0.6
@@ -516,24 +527,36 @@ def main():
                 original_sentences = batch["input_ids"][:, 0, :]
                 similar_sentences = batch["input_ids"][:, 1, :]
                 
-                # use BertModel to get embeddings
-                original_embeddings = self.help_model(original_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
-                similar_embeddings = self.help_model(similar_sentences).last_hidden_state.mean(dim=1) # (bs, dim)
+                original_attention_mask = batch["attention_mask"][:, 0, :]
+                similar_attention_mask = batch["attention_mask"][:, 1, :]
 
-                sim = Similarity(0.05)
-                # original_embeddings.unsqueeze(1) -> (bs, 1, dim)
-                # similar_embeddings.unsqueeze(0) -> (1, bs, dim)
-                similarity_scores = sim(original_embeddings.unsqueeze(1), similar_embeddings.unsqueeze(0))
-                # If the similarity_scores is greater than the threshold_high, then set it to e^-10
-                # If the similarity_scores is less than the threshold_low, then set it to 1
-                # Otherwise, do not change the value
-                mask_greater = similarity_scores > self.similarity_threshold_high
-                mask_lower = similarity_scores < self.similarity_threshold_low
-                
-                # TODO: 添加一个flag用于表示, sim_scores是否使用动态掩码
-                similarity_scores[mask_greater] = torch.tensor(math.exp(-10))
-                similarity_scores[mask_lower] = torch.tensor(1.0)
-                batch["similarity_mask"] = similarity_scores
+                def mean_pool(last_hidden_state, attention_mask):
+                    mask = attention_mask.unsqueeze(-1).type_as(last_hidden_state)
+                    return (last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-12)
+
+                with torch.no_grad():
+                    original_outputs = self.help_model(
+                        input_ids=original_sentences,
+                        attention_mask=original_attention_mask,
+                        return_dict=True,
+                    )
+                    similar_outputs = self.help_model(
+                        input_ids=similar_sentences,
+                        attention_mask=similar_attention_mask,
+                        return_dict=True,
+                    )
+                    original_embeddings = mean_pool(original_outputs.last_hidden_state, original_attention_mask)
+                    similar_embeddings = mean_pool(similar_outputs.last_hidden_state, similar_attention_mask)
+
+                raw_similarity = F.cosine_similarity(
+                    original_embeddings.unsqueeze(1),
+                    similar_embeddings.unsqueeze(0),
+                    dim=-1,
+                )
+                similarity_mask = raw_similarity.new_ones(raw_similarity.shape)
+                similarity_mask[raw_similarity > self.similarity_threshold_high] = math.exp(-10)
+                similarity_mask.fill_diagonal_(1.0)
+                batch["similarity_mask"] = similarity_mask
                 # batch["similarity_mask"] = None
 
             if "label" in batch:
@@ -550,9 +573,52 @@ def main():
             """
             Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
             """
-            pass
+            if self.tokenizer.mask_token is None:
+                raise ValueError(
+                    "This tokenizer does not have a mask token, which is required for masked language modeling."
+                )
+
+            labels = inputs.clone()
+            probability_matrix = torch.full(labels.shape, self.mlm_probability, device=labels.device)
+            if special_tokens_mask is None:
+                special_tokens_mask = [
+                    self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True)
+                    for val in labels.tolist()
+                ]
+                special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool, device=labels.device)
+            else:
+                special_tokens_mask = special_tokens_mask.to(device=labels.device, dtype=torch.bool)
+
+            probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
+            if self.tokenizer.pad_token_id is not None:
+                padding_mask = labels.eq(self.tokenizer.pad_token_id)
+                probability_matrix.masked_fill_(padding_mask, value=0.0)
+
+            masked_indices = torch.bernoulli(probability_matrix).bool()
+            labels[~masked_indices] = -100
+
+            inputs = inputs.clone()
+            indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8, device=labels.device)).bool() & masked_indices
+            inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+
+            indices_random = (
+                torch.bernoulli(torch.full(labels.shape, 0.5, device=labels.device)).bool()
+                & masked_indices
+                & ~indices_replaced
+            )
+            random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long, device=labels.device)
+            inputs[indices_random] = random_words[indices_random]
+            return inputs, labels
     if model_args.help_model_path is not None:
-        help_model = BertModel.from_pretrained(model_args.help_model_path)
+        help_model = AutoModel.from_pretrained(
+            model_args.help_model_path,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+        help_model.eval()
+        for param in help_model.parameters():
+            param.requires_grad_(False)
     else:
         help_model = None
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(
@@ -594,7 +660,7 @@ def main():
 
     # TODO: Use our evaluation code in /root/metrics
     # Evaluation
-    # results = {}
+    results = {}
     # if training_args.do_eval:
     #     logger.info("*** Evaluate ***")
     #     results = trainer.evaluate(eval_senteval_transfer=True)
