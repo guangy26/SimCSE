@@ -16,6 +16,7 @@ from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
     AutoConfig,
+    AutoModel,
     AutoModelForMaskedLM,
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -27,9 +28,6 @@ from transformers import (
     default_data_collator,
     set_seed,
     EvalPrediction,
-    BertModel,
-    BertForPreTraining,
-    RobertaModel
 )
 from transformers.tokenization_utils_base import BatchEncoding, PaddingStrategy, PreTrainedTokenizerBase
 from transformers.trainer_utils import is_main_process
@@ -388,11 +386,23 @@ def main():
                 use_auth_token=True if model_args.use_auth_token else None,
                 model_args=model_args
             )
-            if model_args.do_mlm:
-                pretrained_model = BertForPreTraining.from_pretrained(model_args.model_name_or_path)
-                model.lm_head.load_state_dict(pretrained_model.cls.predictions.state_dict())
         else:
             raise NotImplementedError
+        if model_args.do_mlm:
+            pretrained_mlm_model = AutoModelForMaskedLM.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+            )
+            if isinstance(model, BertForCL):
+                model.lm_head.load_state_dict(pretrained_mlm_model.cls.predictions.state_dict())
+            elif isinstance(model, RobertaForCL):
+                model.lm_head.load_state_dict(pretrained_mlm_model.lm_head.state_dict())
+            else:
+                raise NotImplementedError("Unsupported model type for MLM head initialization")
     else:
         raise NotImplementedError
         logger.info("Training new model from scratch")
@@ -481,7 +491,7 @@ def main():
         pad_to_multiple_of: Optional[int] = None
         mlm: bool = True
         mlm_probability: float = data_args.mlm_probability
-        help_model: Optional[BertModel] = None
+        help_model: Optional[torch.nn.Module] = None
         # TODO: 将两个阈值也作为cmdline args传入
         similarity_threshold_high: float = 0.85
         similarity_threshold_low: float = 0.6
@@ -600,7 +610,12 @@ def main():
             inputs[indices_random] = random_words[indices_random]
             return inputs, labels
     if model_args.help_model_path is not None:
-        help_model = BertModel.from_pretrained(model_args.help_model_path)
+        help_model = AutoModel.from_pretrained(
+            model_args.help_model_path,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
         help_model.eval()
         for param in help_model.parameters():
             param.requires_grad_(False)

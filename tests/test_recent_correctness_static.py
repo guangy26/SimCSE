@@ -63,9 +63,20 @@ class RecentCorrectnessStaticTests(unittest.TestCase):
 
     def test_help_model_is_frozen_for_collator_masking(self):
         source = read_repo_file("train.py")
+        self.assertIn("AutoModel,", source)
+        self.assertIn("help_model = AutoModel.from_pretrained(", source)
+        self.assertNotIn("BertModel.from_pretrained(model_args.help_model_path)", source)
         self.assertIn("help_model.eval()", source)
         self.assertIn("for param in help_model.parameters():", source)
         self.assertIn("param.requires_grad_(False)", source)
+
+    def test_mlm_head_initializes_for_all_supported_model_branches(self):
+        source = read_repo_file("train.py")
+        self.assertIn("pretrained_mlm_model = AutoModelForMaskedLM.from_pretrained(", source)
+        self.assertIn("if isinstance(model, BertForCL):", source)
+        self.assertIn("pretrained_mlm_model.cls.predictions.state_dict()", source)
+        self.assertIn("elif isinstance(model, RobertaForCL):", source)
+        self.assertIn("pretrained_mlm_model.lm_head.state_dict()", source)
 
     def test_distributed_similarity_mask_matches_global_logits(self):
         source = read_repo_file("simcse/models.py")
