@@ -64,7 +64,7 @@ class RecentTrainingCorrectnessStaticTests(unittest.TestCase):
         self.assertIn("with torch.no_grad():", source)
         self.assertIn("attention_mask=attention_mask", source)
         self.assertIn("Similarity(1.0)", source)
-        self.assertIn("similarity_mask.fill_diagonal_(1.0)", source)
+        self.assertIn("similarity_mask[diagonal, diagonal] = 1.0", source)
 
     def test_distributed_mask_expands_to_global_neutral_blocks(self):
         source = read_source("simcse/models.py")
@@ -72,8 +72,13 @@ class RecentTrainingCorrectnessStaticTests(unittest.TestCase):
         self.assertIn("tensor_list=similarity_mask_list", source)
         self.assertIn("global_similarity_mask = similarity_mask.new_ones(", source)
         self.assertIn("global_similarity_mask[start:end, start:end] = rank_mask", source)
-        self.assertIn("similarity_mask.fill_diagonal_(1.0)", source)
-        self.assertIn("clamp_min(torch.finfo(cos_sim.dtype).tiny)", source)
+        self.assertIn("similarity_mask[diagonal, diagonal] = 1.0", source)
+        self.assertIn("similarity_mask.clamp_min(1e-6)", source)
+
+    def test_senteval_paths_do_not_depend_on_current_working_directory(self):
+        source = read_source("simcse/trainers.py")
+        self.assertIn("os.path.dirname(os.path.dirname(os.path.abspath(__file__)))", source)
+        self.assertIn("PATH_TO_DATA = os.path.join(PATH_TO_SENTEVAL, 'data')", source)
 
     def test_trainer_does_not_override_callback_eval_and_save_decisions(self):
         source = read_source("simcse/trainers.py")

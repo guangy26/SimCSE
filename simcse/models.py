@@ -220,8 +220,9 @@ def cl_forward(cls,
     if similarity_mask is not None:
         similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
         similarity_mask = similarity_mask.clone()
-        similarity_mask.fill_diagonal_(1.0)
-        similarity_mask = similarity_mask.clamp_min(torch.finfo(cos_sim.dtype).tiny)
+        diagonal = torch.arange(similarity_mask.size(0), device=similarity_mask.device)
+        similarity_mask[diagonal, diagonal] = 1.0
+        similarity_mask = similarity_mask.clamp_min(1e-6)
         cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs, bs)
     
     # Hard negative

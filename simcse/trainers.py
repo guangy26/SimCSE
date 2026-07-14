@@ -76,12 +76,11 @@ if is_datasets_available():
 from transformers.optimization import Adafactor, AdamW, get_scheduler
 import copy
 # Set path to SentEval
-PATH_TO_SENTEVAL = './SentEval'
-PATH_TO_DATA = './SentEval/data'
+REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PATH_TO_SENTEVAL = os.path.join(REPOSITORY_ROOT, 'SentEval')
+PATH_TO_DATA = os.path.join(PATH_TO_SENTEVAL, 'data')
 
-# Import SentEval
 sys.path.insert(0, PATH_TO_SENTEVAL)
-import senteval
 import numpy as np
 from datetime import datetime
 from filelock import FileLock
@@ -112,6 +111,7 @@ class CLTrainer(Trainer):
         metric_key_prefix: str = "eval",
         eval_senteval_transfer: bool = False,
     ) -> Dict[str, float]:
+        import senteval
 
         # SentEval prepare and batcher
         def prepare(params, samples):

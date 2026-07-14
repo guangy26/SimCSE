@@ -546,7 +546,8 @@ def main():
                 similarity_mask[mask_lower] = 1.0
                 # Contrastive labels point to the diagonal, so positive pairs
                 # must never be treated as high-similarity false negatives.
-                similarity_mask.fill_diagonal_(1.0)
+                diagonal = torch.arange(similarity_mask.size(0))
+                similarity_mask[diagonal, diagonal] = 1.0
                 batch["similarity_mask"] = similarity_mask
 
             if "label" in batch:
