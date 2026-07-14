@@ -11,7 +11,6 @@ import warnings
 from pathlib import Path
 import importlib.util
 from packaging import version
-from sentence_transformers import SentenceTransformer
 from transformers import Trainer
 from transformers.modeling_utils import PreTrainedModel
 from transformers.training_args import ParallelMode, TrainingArguments
@@ -77,10 +76,10 @@ if is_datasets_available():
 from transformers.optimization import Adafactor, AdamW, get_scheduler
 import copy
 # Set path to SentEval
-PATH_TO_SENTEVAL = './SentEval'
-PATH_TO_DATA = './SentEval/data'
+REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PATH_TO_SENTEVAL = os.path.join(REPOSITORY_ROOT, 'SentEval')
+PATH_TO_DATA = os.path.join(PATH_TO_SENTEVAL, 'data')
 
-# Import SentEval
 sys.path.insert(0, PATH_TO_SENTEVAL)
 import numpy as np
 from datetime import datetime
@@ -112,6 +111,7 @@ class CLTrainer(Trainer):
         metric_key_prefix: str = "eval",
         eval_senteval_transfer: bool = False,
     ) -> Dict[str, float]:
+        import senteval
 
         # SentEval prepare and batcher
         def prepare(params, samples):
@@ -556,8 +556,6 @@ class CLTrainer(Trainer):
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
-                    self.control.should_evaluate = False
-                    self.control.should_save = False
 
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
 
@@ -565,8 +563,6 @@ class CLTrainer(Trainer):
                     break
 
             self.control = self.callback_handler.on_epoch_end(self.args, self.state, self.control)
-            self.control.should_evaluate = False
-            self.control.should_save = True
 
             self._maybe_log_save_evaluate(tr_loss, model, trial, epoch)
 

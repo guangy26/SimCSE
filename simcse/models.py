@@ -192,13 +192,38 @@ def cl_forward(cls,
         z1 = torch.cat(z1_list, 0)
         z2 = torch.cat(z2_list, 0)
 
+        if similarity_mask is not None:
+            # The collator computes one square mask per rank. Build a global
+            # block mask for the gathered logits; cross-rank pairs are unknown
+            # locally and therefore receive the neutral weight of one.
+            similarity_mask_list = [
+                torch.zeros_like(similarity_mask) for _ in range(dist.get_world_size())
+            ]
+            dist.all_gather(
+                tensor_list=similarity_mask_list,
+                tensor=similarity_mask.contiguous(),
+            )
+            global_similarity_mask = similarity_mask.new_ones(
+                (batch_size * dist.get_world_size(),) * 2
+            )
+            for rank, rank_mask in enumerate(similarity_mask_list):
+                start = rank * batch_size
+                end = start + batch_size
+                global_similarity_mask[start:end, start:end] = rank_mask
+            similarity_mask = global_similarity_mask
+
     # z1.unsqueeze(1) -> (bs, 1, hidden)
     # z2.unsqueeze(0) -> (1, bs, hidden)
     cos_sim = cls.sim(z1.unsqueeze(1), z2.unsqueeze(0)) # (bs, bs)
 
     # Add log(similarity mask) to cos_sim
     if similarity_mask is not None:
-        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs,)
+        similarity_mask = similarity_mask.to(device=cos_sim.device, dtype=cos_sim.dtype)
+        similarity_mask = similarity_mask.clone()
+        diagonal = torch.arange(similarity_mask.size(0), device=similarity_mask.device)
+        similarity_mask[diagonal, diagonal] = 1.0
+        similarity_mask = similarity_mask.clamp_min(1e-6)
+        cos_sim = cos_sim + torch.log(similarity_mask) # similarity_mask: (bs, bs)
     
     # Hard negative
     if num_sent >= 3:
