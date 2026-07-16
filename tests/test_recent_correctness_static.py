@@ -64,6 +64,12 @@ class RecentCorrectnessStaticTests(unittest.TestCase):
         self.assertIn("import senteval", source)
         self.assertIn("senteval.engine.SE", source)
 
+    def test_trainer_respects_callback_evaluation_and_save_decisions(self):
+        source = read_source("simcse/trainers.py")
+        self.assertNotIn("self.control.should_evaluate = False", source)
+        self.assertNotIn("self.control.should_save = False", source)
+        self.assertNotIn("self.control.should_save = True", source)
+
 
 if __name__ == "__main__":
     unittest.main()
