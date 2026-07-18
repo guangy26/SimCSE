@@ -73,6 +73,18 @@ class RecentCorrectnessStaticTests(unittest.TestCase):
         )
         self.assertIn("similarity_mask = global_similarity_mask", source)
 
+    def test_senteval_is_imported_without_stale_optional_dependency(self):
+        source = read_source("simcse/trainers.py")
+        self.assertIn("import senteval", source)
+        self.assertIn("senteval.engine.SE", source)
+        self.assertNotIn("sentence_transformers", source)
+
+    def test_trainer_honors_callback_evaluation_and_save_decisions(self):
+        source = read_source("simcse/trainers.py")
+        self.assertNotIn("self.control.should_evaluate = False", source)
+        self.assertNotIn("self.control.should_save = False", source)
+        self.assertNotIn("self.control.should_save = True", source)
+
 
 if __name__ == "__main__":
     unittest.main()
